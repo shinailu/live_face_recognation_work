@@ -1,0 +1,1 @@
+主要内容是tain.py 的28行添加loss函数；model_baseline_Fusion.py 第34行声明模型的res_4,res_5,填入成成res_4,res_5所需要的参数；第70行分别对color,depth两个模态进行res0,res1,res2的计算；第75行将3个模态 concat 融合,并实现MFE
