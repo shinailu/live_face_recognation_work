@@ -1,16 +1,24 @@
 # coding:utf-8
 import dlib
-import numpy as np
-from copy import deepcopy
-import cv2
 import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+import sys
+import torch
+import cv2
+from imgaug import augmenters as iaa
+import numpy as np
+import  torch.nn.functional as F
+from collections import  OrderedDict
 
 #http://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat
+#http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
 #http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
 
 img_1 = r'1.jpg'
 img_2 = r'2.jpg'
 img_3 = r'3.jpg'
+
+RESIZE_SIZE =112
 
 class FaceRecognitionExample(object):
     def __init__(self, img_1, img_2, img_3):
@@ -88,16 +96,120 @@ class FaceRecognitionExample(object):
 #detection_recognition.compare()
 
 ## 填空 补齐FaceSpoofing的代码
-#class FaceSpoofing(object):
-#
-#   # 实现活体检测二分类
-#   def classify()
+class FaceSpoofing(object):
+    def __init__(self):
+        from FaceBagNet_model_A import Net
+        self.net = Net(num_class=2, is_first_bn=True)
+        model_path = 'global_min_acer_model.pth'
+        if torch.cuda.is_available():
+            state_dict = torch.load(model_path, map_location='cuda')
+        else:
+            state_dict = torch.load(model_path, map_location='cpu')
+        new_state_dict = OrderedDict
+        for k, v in state_dict.items():
+            name = k[7:]
+            new_state_dict[name] = v
+        self.net.load_state_dict(new_state_dict)
+        if torch.cuda.is_available():
+            self.net = self.net.cuda()
 
+    def classify(self, color):
+        color = cv2.resize(color, (RESIZE_SIZE, RESIZE_SIZE))
+        def color_augumentor(image, target_shape=(64, 64, 3), is_infer=False):
+            if is_infer:
+                augment_img = iaa.Sequential([iaa.Fliplr(0)])
+            image = augment_img.augment_image(image)
+            image = TTA_36_cropps(image, target_shape)
+            return image
+
+        color = color_augumentor(color, target_shape=(64, 64, 3), is_infer=True)
+        n = len(color)
+        color = np.concatenate(color, axis=0)
+        image = color
+        image = np.transpose(image, (0, 3, 1, 2))
+        image = image.astype(np.float32)
+        image = image / 255.0
+        input_image = torch.FloatTensor(image)
+        if (len(input_image.size()) == 4) and torch.cuda.is_available():
+            input_image = input_image.unsqueeze(0).cuda()
+        elif (len(input_image.size()) == 4) and not torch.cuda.is_available():
+            input_image = input_image.unsqueeze(0)
+
+        b, n, c, w, h = input_image.size()
+        input_image = input_image.view(b * n, c, w, h)
+        if torch.cuda.is_available():
+            input_image = input_image.cuda()
+
+        with torch.no_grad():
+            logit, _, _ = self.net(input_image)
+            logit = logit.view(b, n, 2)
+            logit = torch.mean(logit, dim=1, keepdim=False)
+            prob = F.softmax(logit, 1)
+        return np.argmax(prob.detach().cpu().numpy())
+
+
+def TTA_36_cropps(image, target_shape=(32, 32, 3)):
+           image = cv2.resize(image, (RESIZE_SIZE, RESIZE_SIZE))
+
+           width, height, d = image.shape
+           target_w, target_h, d = target_shape
+
+           start_x = (width - target_w) // 2
+           start_y = (height - target_h) // 2
+
+           starts = [[start_x, start_y],
+
+                     [start_x - target_w, start_y],
+                     [start_x, start_y - target_w],
+                     [start_x + target_w, start_y],
+                     [start_x, start_y + target_w],
+
+                     [start_x + target_w, start_y + target_w],
+                     [start_x - target_w, start_y - target_w],
+                     [start_x - target_w, start_y + target_w],
+                     [start_x + target_w, start_y - target_w],
+                     ]
+
+           images = []
+
+           for start_index in starts:
+               image_ = image.copy()
+               x, y = start_index
+
+               if x < 0:
+                   x = 0
+               if y < 0:
+                   y = 0
+
+               if x + target_w >= RESIZE_SIZE:
+                   x = RESIZE_SIZE - target_w - 1
+               if y + target_h >= RESIZE_SIZE:
+                   y = RESIZE_SIZE - target_h - 1
+
+               zeros = image_[x:x + target_w, y: y + target_h, :]
+
+               image_ = zeros.copy()
+
+               zeros = np.fliplr(zeros)
+               image_flip_lr = zeros.copy()
+
+               zeros = np.flipud(zeros)
+               image_flip_lr_up = zeros.copy()
+
+               zeros = np.fliplr(zeros)
+               image_flip_up = zeros.copy()
+
+               images.append(image_.reshape([1, target_shape[0], target_shape[1], target_shape[2]]))
+               images.append(image_flip_lr.reshape([1, target_shape[0], target_shape[1], target_shape[2]]))
+               images.append(image_flip_up.reshape([1, target_shape[0], target_shape[1], target_shape[2]]))
+               images.append(image_flip_lr_up.reshape([1, target_shape[0], target_shape[1], target_shape[2]]))
+
+           return images
 if __name__=="__main__":
     # 初始化人脸检测模型
     detector = dlib.get_frontal_face_detector()
     ## 填空 初始化活体检测模型
-    #face_spoofing = 
+    face_spoofing = FaceSpoofing()
     # 初始化关键点检测模型
     predictor = dlib.shape_predictor(r'./shape_predictor_68_face_landmarks.dat')
     # 初始化人脸特征模型
@@ -130,13 +242,15 @@ if __name__=="__main__":
             #pdb.set_trace()
             # 人脸对齐
             face_align=dlib.get_face_chip(frame, shape, 150,0.1)
+            is_attack_str ='live'
             ## 活体检测
-            #if not face_spoofing.classify(face_aling):
-            #    print(" not humman\n ")     
-            #    # 框为红色
-            #    frame=cv2.rectangle(frame,(det.left(),det.top()),(det.right(),det.bottom()),(0,0,255),2)
+            if not face_spoofing.classify(face_align):
+                 print(" not humman\n ")
+                # 框为红色
+                 frame=cv2.rectangle(frame,(det.left(),det.top()),(det.right(),det.bottom()),(0,0,255),2)
             # 提取人脸特征
             face_feature=recognition.compute_face_descriptor(face_align)
+            print('face_feature:',face_feature)
             # 计算人脸相似度
             similarity=1-np.linalg.norm(np.array(face_feature)-np.array(face_feature_zmm))
             # 将关键点绘制到人脸上，
@@ -145,7 +259,7 @@ if __name__=="__main__":
                 cv2.circle(frame, (shape.part(i).x, shape.part(i).y), 1, (0, 0, 255))
         #print(dets.rectangles)
         # 为了显示出相似度，我们将相似度写到图片上，
-        cv2.putText(frame,"similarity=%s"%(similarity),(100,200),cv2.FONT_HERSHEY_DUPLEX, 0.3, (0, 255, 255), 1,cv2.LINE_AA)
+        cv2.putText(frame,"similarity=%s,%s"%(similarity,is_attack_str),(100,200),cv2.FONT_HERSHEY_DUPLEX, 0.3, (0, 255, 255), 1,cv2.LINE_AA)
         # 显示图片，图片上有矩形框，关键点，以及相似度
         cv2.imshow("capture", cv2.resize(frame,(y,x)))
         #cv2.imshow("face_align",face_align)
@@ -153,4 +267,3 @@ if __name__=="__main__":
             break
     cap.release()
     cv2.destroyAllWindows()
-
